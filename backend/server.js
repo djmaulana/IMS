@@ -194,8 +194,14 @@ app.delete('/api/item/:id', (req, res) => {
 
 // Endpoint to get total quantity of stock sold
 app.get('/api/stats/total-stock-sold', (req, res) => {
-  const sql = 'SELECT SUM(quantity) as totalStockSold FROM stock_transaction';
-  db.get(sql, [], (err, row) => {
+  const { startDate, endDate } = req.query;
+
+  const sql = `
+    SELECT SUM(quantity) as totalStockSold
+    FROM stock_transaction
+    WHERE DATE(date) BETWEEN ? AND ?
+  `;
+  db.get(sql, [startDate, endDate], (err, row) => {
     if (err) {
       res.status(400).json({ "error": err.message });
       return;
@@ -209,15 +215,18 @@ app.get('/api/stats/total-stock-sold', (req, res) => {
 
 // Endpoint to get the top selling product
 app.get('/api/stats/top-selling-product', (req, res) => {
+  const { startDate, endDate } = req.query;
+
   const sql = `
     SELECT p.name, SUM(st.quantity) as totalSold
     FROM stock_transaction st
     JOIN produk p ON st.barcode = p.barcode
+    WHERE DATE(st.date) BETWEEN ? AND ?
     GROUP BY p.name
     ORDER BY totalSold DESC
     LIMIT 1
   `;
-  db.get(sql, [], (err, row) => {
+  db.get(sql, [startDate, endDate], (err, row) => {
     if (err) {
       res.status(400).json({ "error": err.message });
       return;
@@ -229,14 +238,44 @@ app.get('/api/stats/top-selling-product', (req, res) => {
   });
 });
 
+// Endpoint to get top 5 selling products
+app.get('/api/stats/top-5-selling-products', (req, res) => {
+  const { startDate, endDate } = req.query;
+
+  const sql = `
+    SELECT p.name, SUM(st.quantity) as totalSold
+    FROM stock_transaction st
+    JOIN produk p ON st.barcode = p.barcode
+    WHERE DATE(st.date) BETWEEN ? AND ?
+    GROUP BY p.name
+    ORDER BY totalSold DESC
+    LIMIT 5
+  `;
+  db.all(sql, [startDate, endDate], (err, rows) => {
+    if (err) {
+      res.status(400).json({ "error": err.message });
+      return;
+    }
+    res.json({
+      "message": "success",
+      "data": rows
+    });
+  });
+});
+
+
+
 // Endpoint to get net profit
 app.get('/api/stats/net-profit', (req, res) => {
+  const { startDate, endDate } = req.query;
+
   const sql = `
     SELECT SUM((p.selling_price - p.hpp) * st.quantity) as netProfit
     FROM stock_transaction st
     JOIN produk p ON st.barcode = p.barcode
+    WHERE DATE(st.date) BETWEEN ? AND ?
   `;
-  db.get(sql, [], (err, row) => {
+  db.get(sql, [startDate, endDate], (err, row) => {
     if (err) {
       res.status(400).json({ "error": err.message });
       return;
@@ -282,7 +321,7 @@ app.post('/api/stockin-logs', (req, res) => {
   });
 });
 
-// Endpoint untuk mengambil semua log (ubah ke 5 terbaru)
+// Endpoint untuk mengambil semua log (ubah ke 3 terbaru)
 app.get('/api/stockin-logs', (req, res) => {
   const sql = 'SELECT * FROM stock_log ORDER BY id DESC LIMIT 3';
   db.all(sql, [], (err, rows) => {
@@ -311,64 +350,56 @@ app.get('/api/stockout-logs', (req, res) => {
   });
 });
 
-// Endpoint untuk mendapatkan statistik berdasarkan rentang tanggal
 app.get('/api/stats/date-range', (req, res) => {
   const { startDate, endDate } = req.query;
 
-  // SQL query untuk total stok keluar
-  const totalStockSoldSql = `
-    SELECT SUM(quantity) AS total
+  const stockOutSql = `
+    SELECT DATE(date) as date, SUM(quantity) as quantity
     FROM stock_transaction
-    WHERE date BETWEEN ? AND ?`;
+    WHERE DATE(date) BETWEEN ? AND ?
+    GROUP BY DATE(date)
+  `;
 
-  // SQL query untuk keuntungan bersih
-  const netProfitSql = `
-    SELECT SUM((selling_price - hpp) * quantity) AS net_profit
-    FROM stock_transaction
-    JOIN produk ON stock_transaction.barcode = produk.barcode
-    WHERE date BETWEEN ? AND ?`;
+  const stockInSql = `
+    SELECT DATE(date) as date, SUM(quantity) as quantity
+    FROM stock_log
+    WHERE DATE(date) BETWEEN ? AND ?
+    GROUP BY DATE(date)
+  `;
 
-  // SQL query untuk produk terlaris
-  const topSellingProductSql = `
-    SELECT barcode, SUM(quantity) AS total_quantity
-    FROM stock_transaction
-    WHERE date BETWEEN ? AND ?
-    GROUP BY barcode
-    ORDER BY total_quantity DESC
-    LIMIT 1`;
+  const revenueSql = `
+    SELECT DATE(st.date) as date, SUM((p.selling_price - p.hpp) * st.quantity) as amount
+    FROM stock_transaction st
+    JOIN produk p ON st.barcode = p.barcode
+    WHERE DATE(st.date) BETWEEN ? AND ?
+    GROUP BY DATE(st.date)
+  `;
 
-  // Menjalankan semua query secara bersamaan
   db.serialize(() => {
-    db.get(totalStockSoldSql, [startDate, endDate], (err, row) => {
+    db.all(stockOutSql, [startDate, endDate], (err, stockOutRows) => {
       if (err) {
         res.status(400).json({ "error": err.message });
         return;
       }
 
-      const totalStockSold = row.total;
-
-      db.get(netProfitSql, [startDate, endDate], (err, row) => {
+      db.all(stockInSql, [startDate, endDate], (err, stockInRows) => {
         if (err) {
           res.status(400).json({ "error": err.message });
           return;
         }
 
-        const netProfit = row.net_profit;
-
-        db.get(topSellingProductSql, [startDate, endDate], (err, row) => {
+        db.all(revenueSql, [startDate, endDate], (err, revenueRows) => {
           if (err) {
             res.status(400).json({ "error": err.message });
             return;
           }
 
-          const topSellingProduct = row ? row.barcode : null;
-
           res.json({
             "message": "success",
             "data": {
-              totalStockSold,
-              netProfit,
-              topSellingProduct
+              stockOutData: stockOutRows,
+              stockInData: stockInRows,
+              revenueData: revenueRows,
             }
           });
         });
@@ -378,7 +409,16 @@ app.get('/api/stats/date-range', (req, res) => {
 });
 
 
-
+// Bulk insert items
+app.post('/items/bulk', async (req, res) => {
+  try {
+    const items = req.body;
+    await Item.insertMany(items);
+    res.status(201).json({ message: 'Items successfully added' });
+  } catch (error) {
+    res.status(400).json({ message: 'Error adding items', error });
+  }
+});
 
 // Start the server
 app.listen(port, () => {
