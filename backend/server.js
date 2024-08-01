@@ -81,6 +81,10 @@ app.put('/api/item/stockout/:barcode', (req, res) => {
       return;
     }
 
+    if (row.quantity < quantity) {
+      res.status(400).json({ "error": "Stock Kosong" });    
+      return;
+    }
     const newQuantity = row.quantity - quantity;
 
     const updateSql = 'UPDATE produk SET quantity = ? WHERE barcode = ?';
@@ -419,6 +423,80 @@ app.post('/items/bulk', async (req, res) => {
     res.status(400).json({ message: 'Error adding items', error });
   }
 });
+
+// Endpoint untuk mengambil informasi pesanan berdasarkan nomor resi
+app.get('/api/order/:resi', (req, res) => {
+  const sql = `
+    SELECT stock_transaction.date, produk.name, stock_transaction.quantity, stock_transaction.barcode
+    FROM stock_transaction
+    JOIN produk ON stock_transaction.barcode = produk.barcode
+    WHERE stock_transaction.customer_resi = ?
+  `;
+  const params = [req.params.resi];
+  db.all(sql, params, (err, rows) => {
+    if (err) {
+      res.status(400).json({ "error": err.message });
+      return;
+    }
+    res.json({
+      "message": "success",
+      "data": rows
+    });
+  });
+});
+
+// Endpoint untuk mengembalikan stok produk berdasarkan nomor resi
+app.post('/api/return-stock', (req, res) => {
+  const { customerResi } = req.body;
+  const sqlSelect = `
+    SELECT stock_transaction.barcode, stock_transaction.quantity
+    FROM stock_transaction
+    WHERE stock_transaction.customer_resi = ?
+  `;
+  const sqlUpdateStock = `
+    UPDATE produk
+    SET quantity = quantity + ?
+    WHERE barcode = ?
+  `;
+  const sqlDeleteTransaction = `
+    DELETE FROM stock_transaction
+    WHERE customer_resi = ?
+  `;
+
+  db.all(sqlSelect, [customerResi], (err, rows) => {
+    if (err) {
+      res.status(400).json({ "error": err.message });
+      return;
+    }
+
+    let updateError = false;
+
+    rows.forEach(row => {
+      db.run(sqlUpdateStock, [row.quantity, row.barcode], (err) => {
+        if (err) {
+          updateError = true;
+          res.status(400).json({ "error": err.message });
+          return;
+        }
+      });
+    });
+
+    if (!updateError) {
+      db.run(sqlDeleteTransaction, [customerResi], (err) => {
+        if (err) {
+          res.status(400).json({ "error": err.message });
+          return;
+        }
+
+        res.json({
+          "message": "success"
+        });
+      });
+    }
+  });
+});
+
+
 
 // Start the server
 app.listen(port, () => {
